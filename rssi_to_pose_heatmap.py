@@ -17,14 +17,15 @@ os.makedirs("results", exist_ok=True)
 os.makedirs("models", exist_ok=True)
 
 # ▼▼▼ ユーザー設定値 ▼▼▼
-X_RANGE = (-1000.0, 1200.0)
-Z_RANGE = (-600.0, 1000.0)
+# Z軸（短辺）: データ最大値 846.5mm をカバーするため、余裕を持って ±1000mm に設定
+Z_RANGE = (-1000.0, 1000.0)  # 幅 2000mm
+
+# X軸（長辺）: Z軸の幅(2000mm) の「2倍」の幅を確保して、比率2:1を維持
+X_RANGE = (-2000.0, 2000.0)  # 幅 4000mm (-2000 ~ 2000)
 MAP_SIZE = (64, 32)
 # ▲▲▲ ユーザー設定値 ▲▲▲
 
 # --- ジェネレータクラス (メモリ節約の要) ---
-
-
 class HeatmapGenerator(Sequence):
     """
     学習時にリアルタイムでヒートマップを生成するクラス。
@@ -113,7 +114,25 @@ except FileNotFoundError:
 
 # RSSIデータ (X)
 rssi_columns = [col for col in input_df.columns if "rssi" in col]
+rssi_columns = [col for col in input_df.columns if "rssi" in col]
 X_all_raw = input_df[rssi_columns].values.astype(np.float32)
+
+# 1. 平均と標準偏差を計算 (各タグごとに計算 = axis=0)
+train_mean = np.mean(X_all_raw, axis=0)
+train_std = np.std(X_all_raw, axis=0)
+
+# ゼロ除算防止のため、stdが0の場合は1にするなどの安全策
+train_std = np.where(train_std < 1e-6, 1.0, train_std)
+
+# 2. 正規化実行 (Z-score: (x - mean) / std)
+X_all_raw = (X_all_raw - train_mean) / train_std
+
+print("★ 正規化完了: 平均0, 分散1 に変換しました。")
+print(f"  Mean[0]: {train_mean[0]:.2f}, Std[0]: {train_std[0]:.2f}")
+
+# 3. 統計量を保存 (推論時に使うため)
+np.save(os.path.join("models", "train_mean.npy"), train_mean)
+np.save(os.path.join("models", "train_std.npy"), train_std)
 
 # 座標データ (z) - ヒートマップに変換せず、座標のまま持つ
 # カラム順序を固定: Head_X, Head_Z, Heart_X, Heart_Z ...

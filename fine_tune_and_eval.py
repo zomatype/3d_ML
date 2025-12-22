@@ -7,8 +7,11 @@ import os
 import gc
 
 # ▼▼▼ 設定 ▼▼▼
-X_RANGE = (-1000.0, 1200.0)
-Z_RANGE = (-600.0, 1000.0)
+# Z軸（短辺）: データ最大値 846.5mm をカバーするため、余裕を持って ±1000mm に設定
+Z_RANGE = (-1000.0, 1000.0)  # 幅 2000mm
+
+# X軸（長辺）: Z軸の幅(2000mm) の「2倍」の幅を確保して、比率2:1を維持
+X_RANGE = (-2000.0, 2000.0)  # 幅 4000mm (-2000 ~ 2000)
 MAP_SIZE = (64, 32)
 TIME_STEPS = 20
 MODEL_PATH = "models/seq20_Without_Pooling.keras"
@@ -111,9 +114,34 @@ def main():
         result_df = pd.read_csv("inputs/result2.csv")
     except:
         return
-    input_df = input_df.fillna(-120.0)
+    # fillnaは正規化の前に行う
+    input_df = input_df.fillna(-120.0) 
+    
     rssi_cols = [c for c in input_df.columns if "rssi" in c]
     X_raw = input_df[rssi_cols].values.astype(np.float32)
+
+    # ▼▼▼ 追加: 正規化の適用 ▼▼▼
+    
+    # 【戦略選択】
+    # STRATEGY = "Global"  # Aさんの統計量を使う (従来手法)
+    STRATEGY = "SubjectSpecific"  # Bさんの統計量を使う (提案手法: キャリブレーション)
+
+    if STRATEGY == "Global":
+        # 学習時の統計量をロード
+        mean = np.load("models/train_mean.npy")
+        std = np.load("models/train_std.npy")
+        print("Strategy: Global Normalization (Using Train Stats)")
+    else:
+        # その場のデータから計算 (自己正規化)
+        mean = np.mean(X_raw, axis=0)
+        std = np.std(X_raw, axis=0)
+        std = np.where(std < 1e-6, 1.0, std)
+        print("Strategy: Subject-Specific Normalization (Using Test Stats)")
+
+    # 正規化適用
+    X_raw = (X_raw - mean) / std
+    
+    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
     parts = ["Head", "Heart", "Rshoulder", "Lshoulder", "Rhip", "Lhip"]
     target_cols = []
