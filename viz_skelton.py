@@ -7,23 +7,25 @@ from PIL import Image
 import os
 import io
 
-# ▼▼▼ 設定 (ここを合わせてください) ▼▼▼
-# 1. 計算用の全範囲 (モデル学習時と同じにする)
+# ▼▼▼ 設定 ▼▼▼
+# 範囲設定 (学習時と合わせる)
 X_RANGE_CALC = (-2000.0, 2000.0)
 Z_RANGE_CALC = (-1000.0, 1000.0)
 
-# 2. 動画の表示範囲 (ここを狭くすれば大きく見えます！)
-# ベッドより少し広いくらい (-200~1100, -600~600) がおすすめ
-DISPLAY_X = (-400, 1400)   # 表示したいX範囲
-DISPLAY_Z = (-800, 800)    # 表示したいZ範囲
+# 表示範囲 (ズーム) - ベッド全体が見える範囲
+DISPLAY_X = (-1200, 1200)
+DISPLAY_Z = (-800, 800)
 
-# 3. ベッドの物理サイズ (枠線描画用)
-BED_X = (0, 1980)    # 長さ
-BED_Z = (0, 900)     # 幅 (中心が0でない場合は補正が必要。今は0~900と仮定)
-# ※もしベッド中心がZ=0なら BED_Z = (-450, 450) にしてください
+# ベッド枠 (原点中心)
+BED_X = (-990, 990)
+BED_Z = (-450, 450)
 
 TIME_STEPS = 20
-MODEL_PATH = "models/model_final_complete.keras"
+
+# ★★★ 注意: Fine-Tuning後に保存したモデルを指定してください ★★★
+MODEL_PATH = "models/model_base.keras" 
+# ※もし保存していなければ "models/model_final_complete.keras"
+
 VIZ_FRAMES = 100 
 START_FRAME = 300
 # ▲▲▲▲▲▲▲▲▲▲▲▲▲
@@ -47,52 +49,78 @@ def get_coords_logic5(heatmap, x_range, z_range):
     norm_w = center_w / (w - 1)
     norm_h = center_h / (h - 1)
     
-    # Logic 5 Swap
     pred_x = x_range[0] + norm_w * (x_range[1] - x_range[0])
     pred_z = z_range[0] + norm_h * (z_range[1] - z_range[0])
     return pred_x, pred_z
 
 def main():
     if not os.path.exists(MODEL_PATH):
-        print("❌ モデルがありません")
+        print(f"❌ モデルが見つかりません: {MODEL_PATH}")
+        print("  先に fine_tune_and_eval.py でモデルを保存(save)してください。")
         return
     model = tf.keras.models.load_model(MODEL_PATH)
 
     print("データ読み込み中...")
     try:
-        input_df = pd.read_csv("inputs/input2.csv") # Bさんデータ
+        input_df = pd.read_csv("inputs/input2.csv") 
         result_df = pd.read_csv("inputs/result2.csv")
-    except:
+    except Exception as e:
+        print(f"❌ データ読み込みエラー: {e}")
         return
     
-    # 正規化の適用（もしモデル学習時に正規化していたらここでも必要！）
-    # input_df = input_df.fillna(-120.0)
-    # ... (正規化コードがあればここに挿入) ...
-    
-    # 簡易的に欠損埋めのみ
+    # NaN埋め
     input_df = input_df.fillna(-120.0)
+    
     rssi_cols = [c for c in input_df.columns if "rssi" in c]
     X_raw = input_df[rssi_cols].values.astype(np.float32)
 
-    parts = ["Head", "Heart", "R.Sho", "L.Sho", "R.Hip", "L.Hip"]
-    full_parts_names = ["Head", "Heart", "Rshoulder", "Lshoulder", "Rhip", "Lhip"]
+    # 正規化の適用
+    mean_path = "models/train_mean.npy"
+    std_path = "models/train_std.npy"
     
+    if os.path.exists(mean_path) and os.path.exists(std_path):
+        print("✅ 正規化統計量を適用します。")
+        mean = np.load(mean_path)
+        std = np.load(std_path)
+        X_raw = (X_raw - mean) / std
+    else:
+        print("⚠️ 正規化ファイルが見つかりません。学習条件と一致しているか確認してください。")
+
+    full_parts_names = ["Head", "Heart", "Rshoulder", "Lshoulder", "Rhip", "Lhip"]
     target_cols = []
     for part in full_parts_names:
         target_cols.extend([f"{part}_X", f"{part}_Z"]) 
     y_true_coords = result_df[target_cols].values.astype(np.float32)
 
+    # データ切り出し
     X_seq = []
     y_true_viz = []
-    for i in range(START_FRAME, START_FRAME + VIZ_FRAMES):
-        if i + TIME_STEPS < len(X_raw):
-            X_seq.append(X_raw[i : i + TIME_STEPS])
-            y_true_viz.append(y_true_coords[i + TIME_STEPS])
+    
+    safe_start = min(START_FRAME, len(X_raw) - TIME_STEPS - VIZ_FRAMES)
+    
+    for i in range(safe_start, safe_start + VIZ_FRAMES):
+        X_seq.append(X_raw[i : i + TIME_STEPS])
+        y_true_viz.append(y_true_coords[i + TIME_STEPS])
     X_seq = np.array(X_seq)
     y_true_viz = np.array(y_true_viz)
 
     print("予測中...")
     preds = model.predict(X_seq, verbose=0)
+
+    # ▼▼▼ 追加: ヒートマップの元気度チェック ▼▼▼
+    max_val = np.max(preds)
+    min_val = np.min(preds)
+    avg_val = np.mean(preds)
+    print(f"=== ヒートマップ状態チェック ===")
+    print(f"Max: {max_val:.5f}")
+    print(f"Min: {min_val:.5f}")
+    print(f"Avg: {avg_val:.5f}")
+    
+    if max_val < 0.01:
+        print("⚠️ 警告: ヒートマップの値が小さすぎます！モデルが何も検知していません。")
+        print("   -> 正規化ミス、または学習不足の可能性があります。")
+    else:
+        print("✅ ヒートマップには反応があります。")
     
     frames = []
     print("画像を生成中...")
@@ -102,85 +130,78 @@ def main():
     ]
 
     for k in range(len(preds)):
-        # 背景用ヒートマップ (全パーツの合計)
         heatmap_sum = np.sum(preds[k], axis=-1)
         heatmap_norm = (heatmap_sum - heatmap_sum.min()) / (heatmap_sum.max() - heatmap_sum.min() + 1e-6)
         
-        plt.figure(figsize=(8, 10)) # 縦長画像
+        plt.figure(figsize=(8, 10))
         
-        # 1. 背景ヒートマップ描画 (interpolation='bilinear'で滑らかに！)
-        # aspect='equal' にして歪みを防ぐ
+        # 背景ヒートマップ
+        # extent=[Xmin, Xmax, Zmax, Zmin] (origin=upper, Z軸反転)
         plt.imshow(heatmap_norm, cmap='magma', origin='upper', aspect='equal', interpolation='bilinear',
-                   extent=[X_RANGE_CALC[0], X_RANGE_CALC[1], Z_RANGE_CALC[1], Z_RANGE_CALC[0]], alpha=0.8)
+                   extent=[X_RANGE_CALC[0], X_RANGE_CALC[1], Z_RANGE_CALC[1], Z_RANGE_CALC[0]], alpha=0.6)
         
-        # 2. ベッドの枠線を描画 (これが重要！)
-        # Zが横軸(imshowの列方向)、Xが縦軸(imshowの行方向)のプロットに注意
-        # imshowのextent指定により、通常のplot(Z, X)ではなく、plot(X, Z)などの軸定義に依存します
-        # ここではextent=[Xmin, Xmax, Zmax, Zmin] (origin=upper) なので、横軸=X, 縦軸=Z です。
-        # ※ユーザーの座標系設定(X=長辺, Z=短辺)に合わせて描画します。
+        # ベッド枠描画
+        bx = [BED_X[0], BED_X[1], BED_X[1], BED_X[0], BED_X[0]]
+        bz = [BED_Z[0], BED_Z[0], BED_Z[1], BED_Z[1], BED_Z[0]]
+        plt.plot(bx, bz, color='cyan', linestyle='-', linewidth=2, label='Bed Frame')
         
-        # ベッド矩形 (Width=900, Length=1980)
-        # Z軸中心が0の場合: (-450, 450), X軸 (0, 1980)
-        bed_z_min, bed_z_max = -450, 450
-        bed_x_min, bed_x_max = 0, 1980
+        # 骨格座標のリスト化
+        px_list, pz_list = [], []
+        tx_list, tz_list = [], []
         
-        # Rectangle((x, y), width, height)
-        rect = Rectangle((bed_x_min, bed_z_max), # 左上 (X, Z) ※Z軸反転に注意
-                         bed_x_max - bed_x_min,  # Width (X方向)
-                         bed_z_min - bed_z_max,  # Height (Z方向: 下に向かってマイナスならこう書く)
-                         linewidth=2, edgecolor='cyan', facecolor='none', linestyle='--', label='Bed Area')
-        
-        # 現在のplot設定: X軸が横、Z軸が縦になっているか確認
-        # extentの順序 [X_min, X_max, Z_max, Z_min] なので、
-        # 横軸 = X, 縦軸 = Z (上の方が値が大きいZ_max, 下がZ_min)
-        
-        ax = plt.gca()
-        # ベッド枠を手動でLinePlotで描く方が確実
-        plt.plot([bed_x_min, bed_x_max, bed_x_max, bed_x_min, bed_x_min], 
-                 [bed_z_min, bed_z_min, bed_z_max, bed_z_max, bed_z_min],
-                 color='cyan', linestyle='--', linewidth=2, label='Bed')
-        
-        # 3. 骨格座標の計算と描画
-        px_list = []
-        pz_list = []
         for j in range(6):
-            # 予測座標
+            # 予測
             px, pz = get_coords_logic5(preds[k, :, :, j], X_RANGE_CALC, Z_RANGE_CALC)
             px_list.append(px)
             pz_list.append(pz)
+            # 正解 (Ground Truth)
+            tx_list.append(y_true_viz[k, j*2])
+            tz_list.append(y_true_viz[k, j*2+1])
 
-        # 骨
-        for b_start, b_end in bones:
-            plt.plot([px_list[b_start], px_list[b_end]], [pz_list[b_start], pz_list[b_end]], 
-                     c='white', linewidth=5, alpha=0.7)
-            plt.plot([px_list[b_start], px_list[b_end]], [pz_list[b_start], pz_list[b_end]], 
-                     c='lime', linewidth=2, alpha=1.0) # 色を鮮やかに
+        # --- 描画ループ ---
+        
+        # 1. 正解データ (Blue) - 先に描画
+        for i, (b_start, b_end) in enumerate(bones):
+            label = "Ground Truth" if i == 0 else "" # 凡例用
+            plt.plot([tx_list[b_start], tx_list[b_end]], [tz_list[b_start], tz_list[b_end]], 
+                     c='blue', linewidth=3, alpha=0.7, linestyle='--', label=label)
+            
+        # 正解の関節点
+        plt.scatter(tx_list, tz_list, c='blue', s=80, edgecolors='white', zorder=4, alpha=0.8)
 
-        # 関節
+        # 2. 予測データ (Green/White) - 上に描画
+        for i, (b_start, b_end) in enumerate(bones):
+            label = "Prediction" if i == 0 else ""
+            plt.plot([px_list[b_start], px_list[b_end]], [pz_list[b_start], pz_list[b_end]], 
+                     c='lime', linewidth=2, alpha=1.0, label=label)
+            
+        # 予測の関節点
         plt.scatter(px_list, pz_list, c='white', s=100, edgecolors='black', zorder=5)
         
-        # タイトルと範囲設定
-        plt.title(f"Prediction Frame {START_FRAME + k}", fontsize=14)
-        plt.xlabel("Bed Length (X) [mm]")
-        plt.ylabel("Bed Width (Z) [mm]")
+        # 凡例とタイトル
+        plt.title(f"Comparison Frame {safe_start + k}", fontsize=14)
+        plt.xlabel("X (Long) [mm]")
+        plt.ylabel("Z (Short) [mm]")
         
-        # ★★★ ここで表示範囲を絞る（ズーム） ★★★
+        # 凡例を表示 (重複削除のため工夫済み)
+        plt.legend(loc='upper right')
+
         plt.xlim(DISPLAY_X[0], DISPLAY_X[1])
-        # Z軸は imshow の origin='upper' (上がMax, 下がMin) に合わせる
-        plt.ylim(DISPLAY_Z[1], DISPLAY_Z[0]) 
+        plt.ylim(DISPLAY_Z[0], DISPLAY_Z[1]) # Top->Bottom
         
         plt.grid(True, color='white', alpha=0.2)
 
-        # 保存
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', dpi=100)
+        plt.savefig(buf, format='png', bbox_inches='tight', dpi=80)
         plt.close()
         buf.seek(0)
         frames.append(Image.open(buf))
 
     print("GIF保存中...")
-    frames[0].save("skeleton_viz_v2.gif", save_all=True, append_images=frames[1:], duration=100, loop=0)
-    print("✅ 作成完了: skeleton_viz_v2.gif")
+    frames[0].save("skeleton_compare_v4.gif", save_all=True, append_images=frames[1:], duration=100, loop=0)
+    print("✅ 作成完了: skeleton_compare_v4.gif")
+    print("  - 青い破線・青い丸 : 正解データ (Ground Truth)")
+    print("  - 緑の実線・白い丸 : 予測データ (Prediction)")
 
 if __name__ == "__main__":
     main()

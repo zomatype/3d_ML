@@ -192,6 +192,13 @@ def main():
     avg_error = total_error / (count * len(parts))
     
     print("\n" + "="*50)
+
+    # ▼▼▼ 追加: Fine-Tuning後のモデルを保存 ▼▼▼
+    save_path = "models/model_finetuned_B.keras"
+    model.save(save_path)
+    print(f"💾 Fine-Tuning済みモデルを保存しました: {save_path}")
+    print("これを使って可視化を行ってください。")
+    
     print(f"🎉 最終結果 (Random Split Fine-Tuning)")
     print("="*50)
     print(f"🏆 平均誤差: {avg_error:.2f} mm")
