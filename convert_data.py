@@ -4,11 +4,13 @@ import os
 import glob
 
 # ================= 設定 =================
-# 処理対象のフォルダ
-TARGET_PERSON_DIR = "data_raw/adachi"
-OUTPUT_DIR = "inputs"
-OUTPUT_SUFFIX = ""   # 学習用なら "", テスト用なら "2" など変更してください
+# 被験者名(ファイル名に使用)
+NAME = "okabe"  # 例: "soma" 
 
+# 処理対象のフォルダ
+TARGET_PERSON_DIR = f"data_raw/{NAME}"
+OUTPUT_DIR = "inputs"
+OUTPUT_SUFFIX = f"_{NAME}"   # 学習用なら "", テスト用なら "2" など変更してください
 # リサンプリング間隔
 RESAMPLE_RULE = '50ms'
 
@@ -19,8 +21,8 @@ RSSI_FILL_VALUE = -120.0
 COLUMN_MAPPING = {
     'Head_Rel': 'Head',
     'Chest_Rel': 'Heart',
-    'RightShoulder_Rel': 'Rshoulder',
-    'LeftShoulder_Rel': 'Lshoulder',
+    'RightUpperArm_Rel': 'Rshoulder',
+    'LeftUpperArm_Rel': 'Lshoulder',
     'RightUpperLeg_Rel': 'Rhip',
     'LeftUpperLeg_Rel': 'Lhip'
 }
